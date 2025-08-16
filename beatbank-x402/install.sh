@@ -19,6 +19,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 export CPPFLAGS="-I$JAVA_HOME/include"
 
 echo "📦 Installing requirements..."
+pip uninstall hedera-sdk  # remove any stray package
+pip uninstall hedera    
 pip install -r requirements.txt
 
 echo "✅ Done! Python $(python --version), Java $(java -version)"
