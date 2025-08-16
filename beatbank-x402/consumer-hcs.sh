@@ -5,4 +5,4 @@ source ./venv/bin/activate
 
 export JAVA_TOOL_OPTIONS="--enable-native-access=ALL-UNNAMED"
 
-python app.py
+python consumer_hcs.py

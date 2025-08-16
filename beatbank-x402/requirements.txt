@@ -4,4 +4,4 @@ python-dotenv==1.0.1
 x402==0.2.0
 hedera-sdk-py==2.28.0
 colorama
-
+httpx
