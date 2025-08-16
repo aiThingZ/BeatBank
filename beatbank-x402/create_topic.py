@@ -9,20 +9,22 @@ network = os.getenv("HEDERA_NETWORK", "testnet").lower()
 op_id = AccountId.fromString(os.environ["HEDERA_OPERATOR_ID"])
 op_key = PrivateKey.fromString(os.environ["HEDERA_OPERATOR_KEY"])
 
+# Use Java-style method names
 if network == "testnet":
-    client = Client.for_testnet()
+    client = Client.forTestnet()
 elif network == "previewnet":
-    client = Client.for_previewnet()
+    client = Client.forPreviewnet()
 else:
-    client = Client.for_mainnet()
+    client = Client.forMainnet()
 
-client.set_operator(op_id, op_key)
+client.setOperator(op_id, op_key)
 
 tx = TopicCreateTransaction().setTopicMemo("BeatBank Events").freezeWith(client)
-tx = tx.sign(op_key)  # optional with operator set, but fine
+tx = tx.sign(op_key)  # optional if operator is set
 resp = tx.execute(client)
 receipt = resp.getReceipt(client)
 
 topic_id = receipt.topicId
-print("HEDERA_TOPIC_ID:", topic_id)
+print(f"HEDERA_TOPIC_ID={topic_id.toString()}")
+
 

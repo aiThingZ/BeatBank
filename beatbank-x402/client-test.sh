@@ -3,4 +3,4 @@
 # Activate virtual environment
 source ./venv/bin/activate
 
-python app.py
+python client_payer.py
