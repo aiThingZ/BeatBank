@@ -26,6 +26,33 @@ app.middleware("http")(
         price="$0.001",
         pay_to_address=PAY_TO_ADDRESS,
         path="/upload",
+        # 👇 discovery metadata
+        description="BeatBank: pay-per-upload MP3 to AI-separated stems (Hedera workflow; Walrus storage).",
+        mime_type="application/json",
+        output_schema={
+            # Keep this compact; clients can validate against it
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "BeatBankUploadResponse",
+            "type": "object",
+            "required": ["ok", "job_id", "filename"],
+            "properties": {
+                "ok": {"type": "boolean"},
+                "job_id": {"type": "string"},
+                "filename": {"type": "string"},
+                "saved_to": {"type": "string"},
+                "note": {"type": "string"},
+                # optional/future fields
+                "hedera_topic_id": {"type": "string"},
+                "hedera_message_id": {"type": "string"},
+                "status_url": {"type": "string", "format": "uri"},
+                "walrus_ref": {"type": "string"},
+                "payment": {
+                    "type": "object",
+                    "additionalProperties": True
+                }
+            },
+            "additionalProperties": True,
+        },
     )
 )
 
