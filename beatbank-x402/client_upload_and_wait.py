@@ -45,9 +45,13 @@ async def _poll_for_ready(mirror_base: str, topic_id: str, job_id: str, seq_star
     """
     url = f"{mirror_base}/api/v1/topics/{topic_id}/messages?order=desc&limit=50"
     deadline = time.time() + POLL_TIMEOUT_SEC
+    attempt = 0
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         while time.time() < deadline:
+            attempt += 1
+            print(f"[poll] Attempt {attempt}: querying Hedera mirror for job_id={job_id} (topic={topic_id}, after seq={seq_start})")
+
             try:
                 r = await client.get(url)
                 r.raise_for_status()
