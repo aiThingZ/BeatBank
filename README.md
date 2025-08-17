@@ -26,6 +26,60 @@ The project leverages **Hedera Consensus Service** to manage workflow transparen
 
 ---
 
+# Prerequisites
+
+Before running the BeatBank + x402 prototype, make sure the following are in place:
+
+## 1. Python Environment
+- **Python 3.11+** installed (tested with 3.11).
+- A virtual environment created and activated:
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  ```
+
+## 2. Dependencies
+- Install required Python packages:
+  ```bash
+  pip install -r requirements.txt
+  ```
+  Includes FastAPI, httpx, colorama, dotenv, Hedera SDK.
+
+## 3. Hedera Testnet Account
+- Obtain from [Hedera Portal](https://portal.hedera.com/).
+- Save in `.env`:
+  ```env
+  HEDERA_OPERATOR_ID=0.0.xxxxx
+  HEDERA_OPERATOR_KEY=302e0201...   # Hedera private key
+  HEDERA_TOPIC_ID=0.0.yyyyy         # Topic for job messages
+  ```
+
+## 4. x402 Test Account
+- Generate Ethereum-compatible key.
+- Save in `.env`:
+  ```env
+  PRIVATE_KEY=0xabc123...
+  ```
+
+## 5. Test Audio File
+- Place in project root or `.env`:
+  ```env
+  TEST_FILE=demo.mp3
+  ```
+
+## 6. Running the Server
+```bash
+./run.sh
+```
+
+## 7. Running the Client
+```bash
+python client_payer.py
+```
+
+---
+
+![Flow Diagram](beatbank_x402_flow.png)
 ## 🛠️ Technologies
 *(Details coming soon – this section will be updated as the stack is finalized)*
 
