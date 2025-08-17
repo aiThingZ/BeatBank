@@ -4,7 +4,8 @@
 set -e
 
 brew update
-brew install python@3.11
+brew install python@3.11 
+brew install sui
 
 echo "🧼 Cleaning old venv (if any)..."
 rm -rf venv

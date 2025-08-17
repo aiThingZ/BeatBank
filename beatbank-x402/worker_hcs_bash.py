@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-BeatBank Worker (HCS -> Bash)
+BeatBank Worker (HCS -> Bash -> Walrus)
 - Poll Hedera Mirror Topic for {"event":"received","job_id","filename"}.
 - For each new job:
     * Create isolated work dir: ./jobs_runtime/{job_id}/
     * Copy uploaded file from ./uploads/{job_id}__{filename} -> work/input/{filename}
     * Run your existing bash script (relative paths) inside that work dir
     * Read outputs from work/output/... and work/output_cleaned/...
+    * Upload outputs to Walrus via walrus_uploader.js
     * Persist job status in SQLite
-    * Optionally publish {"event":"ready"} to Hedera if operator creds exist
+    * Optionally publish {"event":"ready", "walrus_ref": "<quilt|blob id>"} to Hedera
       (SKIPPED when DRY_RUN is set)
 """
 
@@ -27,7 +28,44 @@ import httpx
 from dotenv import load_dotenv
 from colorama import init as colorama_init, Fore, Style
 
-# Optional Hedera publish (if installed and creds provided)
+# -------- Walrus uploader integration --------
+WALRUS_UPLOADER = os.getenv("WALRUS_UPLOADER", "./walrus_uploader.js")
+
+def push_to_walrus(vocals_path: str, cleaned_path: Optional[str]) -> dict:
+    """
+    Calls the Node uploader and returns dict:
+      { ok, quiltId, blobId, files: [{path, identifier}] }
+    Raises on failure.
+    """
+    if not os.path.exists(WALRUS_UPLOADER):
+        raise FileNotFoundError(f"Walrus uploader not found: {WALRUS_UPLOADER}")
+
+    args = [WALRUS_UPLOADER, f"{os.path.abspath(vocals_path)}:/vocals.wav"]
+    if cleaned_path and os.path.exists(cleaned_path):
+        args.append(f"{os.path.abspath(cleaned_path)}:/vocals_cleaned.wav")
+
+    env = os.environ.copy()  # should include SUI_PRIVATE_KEY or SUI_MNEMONIC, WALRUS_NETWORK, etc.
+    proc = subprocess.run(args, capture_output=True, text=True, env=env)
+    stdout = (proc.stdout or "").strip()
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Walrus upload failed: rc={proc.returncode} out={stdout} err={(proc.stderr or '').strip()}"
+        )
+
+    try:
+        # read last line (in case of logs) and parse JSON
+        data = json.loads(stdout.splitlines()[-1])
+    except Exception:
+        raise RuntimeError(f"Walrus uploader returned non-JSON: {stdout!r}")
+
+    if not data.get("ok"):
+        raise RuntimeError(f"Walrus uploader error: {data}")
+
+    print(Fore.CYAN + f"[walrus] uploaded ok quiltId={data.get('quiltId')} blobId={data.get('blobId')}" + Style.RESET_ALL)
+    return data
+
+# -------- Optional Hedera publish (if installed and creds provided) --------
 HEDERA_AVAILABLE = False
 try:
     from hedera import Client, TopicId, TopicMessageSubmitTransaction, AccountId, PrivateKey  # type: ignore
@@ -86,6 +124,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     work_dir TEXT,
     output_vocals TEXT,
     output_vocals_clean TEXT,
+    walrus_ref TEXT,
     error TEXT
 );
 """
@@ -275,6 +314,7 @@ def main():
     print(Fore.CYAN + f"[worker] Runtime root={JOBS_RUNTIME_ROOT}")
     print(Fore.CYAN + f"[worker] Stem script={STEMS_SCRIPT}")
     print(Fore.CYAN + f"[worker] DRY_RUN={'1' if DRY_RUN else '0'}")
+    print(Fore.CYAN + f"[worker] Walrus uploader={WALRUS_UPLOADER}")
 
     conn = db_connect()
     offset = load_offset(conn, TOPIC_ID)
@@ -295,7 +335,7 @@ def main():
                     for m in messages:
                         consensus_ts = m.get("consensus_timestamp")
                         seq = m.get("sequence_number")
-                        payer = m.get("payer_account_id")  # << who submitted
+                        payer = m.get("payer_account_id")  # who submitted to HCS
                         msg_b64 = m.get("message")
                         decoded = decode_message(msg_b64)
 
@@ -334,20 +374,29 @@ def main():
 
                         upsert_job(conn, job_id, filename=filename, status="processing", upload_path=source_path)
                         try:
+                            # 1) Stems
                             work_dir, vocals_path, cleaned_path = run_stems_script_for_job(source_path, job_id, filename)
+
+                            # 2) Walrus upload
+                            wal = push_to_walrus(vocals_path, cleaned_path if os.path.exists(cleaned_path) else None)
+                            walrus_ref = wal.get("quiltId") or wal.get("blobId") or "unknown"
+
+                            # Persist job success
                             upsert_job(conn, job_id,
                                        filename=filename,
                                        status="ready",
                                        work_dir=work_dir,
                                        output_vocals=vocals_path,
-                                       output_vocals_clean=cleaned_path if os.path.exists(cleaned_path) else None)
+                                       output_vocals_clean=cleaned_path if os.path.exists(cleaned_path) else None,
+                                       walrus_ref=walrus_ref)
 
-                            # Placeholder until you add real Walrus push
-                            walrus_ref = f"walrus://beatbank/{job_id}"
+                            # 3) Publish "ready" to Hedera (unless DRY_RUN)
                             publish_ready(job_id, filename, walrus_ref)
+
                             print(Fore.MAGENTA + f"[worker] ✅ Job {job_id} ready.\n"
-                                  f"    vocals: {vocals_path}\n"
-                                  f"    cleaned: {cleaned_path}")
+                                  f"    vocals:  {vocals_path}\n"
+                                  f"    cleaned: {cleaned_path}\n"
+                                  f"    walrus:  {walrus_ref}")
 
                         except subprocess.CalledProcessError as e:
                             print(Fore.RED + f"[worker] Stems script failed (job={job_id}) rc={e.returncode}")
