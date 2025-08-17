@@ -9,3 +9,9 @@ HEDERA_TOPIC_ID=
 HOST=127.0.0.1
 PORT=8000
 
+# Paths (all relative)
+UPLOADS_DIR=uploads
+JOBS_RUNTIME_ROOT=jobs_runtime
+STEMS_SCRIPT=./separate_stems.sh
+
+# Set PUBLISH_READY_FROM_SERVER=1 to let the server publish "ready"/"failed"
