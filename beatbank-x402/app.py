@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 # app.py
+
 import os
 import sys
 import uuid
@@ -6,8 +8,9 @@ import json
 import time
 import logging
 from pathlib import Path
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, status
 from fastapi.responses import JSONResponse
 
 from x402.fastapi.middleware import require_payment  # x402 FastAPI middleware
@@ -39,7 +42,7 @@ def _setup_logger() -> logging.Logger:
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(ColorFormatter("[%(asctime)s] %(levelname)s:%(name)s: %(message)s"))
         logger.addHandler(handler)
-        logger.propagate = False
+    logger.propagate = False
     return logger
 
 logger = _setup_logger()
@@ -56,6 +59,11 @@ HEDERA_OPERATOR_ID = os.getenv("HEDERA_OPERATOR_ID")
 HEDERA_OPERATOR_KEY = os.getenv("HEDERA_OPERATOR_KEY")
 HEDERA_TOPIC_ID = os.getenv("HEDERA_TOPIC_ID")
 
+# Controls whether the SERVER itself publishes "ready"/"failed"
+PUBLISH_READY_FROM_SERVER = bool(os.getenv("PUBLISH_READY_FROM_SERVER", "").strip())
+# Global dry-run: if set, the server will not publish ANY Hedera messages and will return 202
+DRY_RUN = bool(os.getenv("DRY_RUN", "").strip())
+
 if not PAY_TO_ADDRESS:
     raise RuntimeError("PAY_TO_ADDRESS is not set. See .env.example")
 if not (HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY and HEDERA_TOPIC_ID):
@@ -63,9 +71,9 @@ if not (HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY and HEDERA_TOPIC_ID):
 
 # Mirror node base URL by network
 MIRROR_BASE = {
-    "testnet":   "https://testnet.mirrornode.hedera.com",
+    "testnet": "https://testnet.mirrornode.hedera.com",
     "previewnet":"https://previewnet.mirrornode.hedera.com",
-    "mainnet":   "https://mainnet-public.mirrornode.hedera.com",
+    "mainnet": "https://mainnet-public.mirrornode.hedera.com",
 }.get(HEDERA_NETWORK, "https://testnet.mirrornode.hedera.com")
 
 # ----- Hedera helpers (snake_case / camelCase compatibility) -----
@@ -110,7 +118,7 @@ HEDERA = _hedera_client()
 TOPIC_ID = _topic_from_string(HEDERA_TOPIC_ID)
 
 # ----- FastAPI app -----
-app = FastAPI(title="BeatBank x402 Uploader", version="0.2.0")
+app = FastAPI(title="BeatBank x402 Uploader", version="0.3.0")
 
 app.middleware("http")(
     require_payment(
@@ -135,6 +143,8 @@ app.middleware("http")(
                 "hedera_sequence_start": {"type": "integer"},
                 "hedera_mirror_base": {"type": "string", "format": "uri"},
                 "status_url": {"type": "string", "format": "uri"},
+                "publish_ready_from_server": {"type": "boolean"},
+                "dry_run": {"type": "boolean"},
             },
             "additionalProperties": True,
         },
@@ -148,7 +158,12 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 def publish_hcs(event: str, payload: dict) -> tuple[str, int]:
     """
     Publish JSON to HCS, return (transaction_id_str, topic_sequence_number).
+    If DRY_RUN is set, log instead and return placeholders.
     """
+    if DRY_RUN:
+        logger.info("[DRY_RUN] Would publish to HCS | event=%s payload=%s", event, payload)
+        return ("dry-run", -1)
+
     msg_bytes = json.dumps({"event": event, **payload}, separators=(",", ":")).encode("utf-8")
     tx = TopicMessageSubmitTransaction().setTopicId(TOPIC_ID).setMessage(msg_bytes)
     resp = tx.execute(HEDERA)
@@ -157,8 +172,14 @@ def publish_hcs(event: str, payload: dict) -> tuple[str, int]:
     tx_id_str = _as_str(resp.transactionId)
     topic_str = _as_str(TOPIC_ID)
     logger.info(
-        "%sHCS publish OK%s | event=%s topic=%s seq=%s tx=%s\n   payload=%s\n   mirror=%s",
-        Fore.CYAN + Style.BRIGHT, Style.RESET_ALL, event, topic_str, seq, tx_id_str, payload,
+        "%sHCS publish OK%s | event=%s topic=%s seq=%s tx=%s\n payload=%s\n mirror=%s",
+        Fore.CYAN + Style.BRIGHT,
+        Style.RESET_ALL,
+        event,
+        topic_str,
+        seq,
+        tx_id_str,
+        payload,
         f"{MIRROR_BASE}/api/v1/topics/{topic_str}/messages/{seq}",
     )
     return tx_id_str, seq
@@ -167,19 +188,53 @@ def publish_hcs(event: str, payload: dict) -> tuple[str, int]:
 def process_job(job_id: str, in_path: Path, filename: str):
     """
     Simulate Demucs + Walrus. Replace with real pipeline later.
+
+    Server-controlled finalization:
+      - Publishes 'ready'/'failed' ONLY if PUBLISH_READY_FROM_SERVER=1 AND DRY_RUN is not set.
+      - Otherwise just logs and returns (letting the external worker publish).
     """
+    logger.info("[server-bg] Starting job=%s file=%s publish_ready_from_server=%s dry_run=%s",
+                job_id, filename, PUBLISH_READY_FROM_SERVER, DRY_RUN)
     try:
-        # simulate work
+        # Simulate work
         time.sleep(3)
         walrus_ref = f"walrus://beatbank/{job_id}"  # placeholder
-        publish_hcs("ready", {"job_id": job_id, "filename": filename, "walrus_ref": walrus_ref, "status": "ready"})
+
+        if PUBLISH_READY_FROM_SERVER and not DRY_RUN:
+            publish_hcs("ready", {
+                "job_id": job_id,
+                "filename": filename,
+                "walrus_ref": walrus_ref,
+                "status": "ready",
+                "publisher": "server"
+            })
+        else:
+            logger.info("[server-bg] Skipping 'ready' publish (PUBLISH_READY_FROM_SERVER=%s, DRY_RUN=%s)",
+                        PUBLISH_READY_FROM_SERVER, DRY_RUN)
+
     except Exception as e:
-        publish_hcs("failed", {"job_id": job_id, "filename": filename, "error": str(e), "status": "failed"})
+        if PUBLISH_READY_FROM_SERVER and not DRY_RUN:
+            publish_hcs("failed", {
+                "job_id": job_id,
+                "filename": filename,
+                "error": str(e),
+                "status": "failed",
+                "publisher": "server"
+            })
+        else:
+            logger.error("[server-bg] Job failed but not publishing (PUBLISH_READY_FROM_SERVER=%s, DRY_RUN=%s): %s",
+                         PUBLISH_READY_FROM_SERVER, DRY_RUN, e)
 
 # ----- Routes -----
 @app.get("/")
 def root():
-    return {"ok": True, "service": "BeatBank x402 Uploader", "hedera_topic_id": _as_str(TOPIC_ID)}
+    return {
+        "ok": True,
+        "service": "BeatBank x402 Uploader",
+        "hedera_topic_id": _as_str(TOPIC_ID),
+        "publish_ready_from_server": PUBLISH_READY_FROM_SERVER,
+        "dry_run": DRY_RUN,
+    }
 
 @app.post("/upload")
 async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
@@ -193,18 +248,35 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
     contents = await file.read()
     out_path.write_bytes(contents)
 
-    # Publish 'received' and start processing in background
+    # Publish 'received' (skipped if DRY_RUN)
     try:
-        tx_id_received, seq_received = publish_hcs("received", {"job_id": job_id, "filename": file.filename, "status": "received"})
+        tx_id_received, seq_received = publish_hcs("received", {
+            "job_id": job_id,
+            "filename": file.filename,
+            "status": "received",
+            "publisher": "server"
+        })
     except Exception as e:
         logger.exception("Hedera publish failed")
-        raise HTTPException(status_code=500, detail=f"Hedera publish failed: {e}")
+        if not DRY_RUN:
+            raise HTTPException(status_code=500, detail=f"Hedera publish failed: {e}")
+        # In DRY_RUN, fall through with placeholders
+        tx_id_received, seq_received = ("dry-run", -1)
 
-    background.add_task(process_job, job_id, out_path, file.filename)
+    # Background processing:
+    # - In DRY_RUN, we *skip* server-side processing (nothing should touch Hedera).
+    # - In normal mode, we can optionally publish 'ready' if flag enabled.
+    if not DRY_RUN:
+        background.add_task(process_job, job_id, out_path, file.filename)
+    else:
+        logger.info("[DRY_RUN] Skipping background processing for job=%s", job_id)
 
-    # Return info the client can use to poll Hedera until 'ready'
+    # Response
     topic_str = _as_str(TOPIC_ID)
     status_url = f"http://{HOST}:{PORT}/jobs/{job_id}"  # optional future route
+    note = ("File accepted in DRY_RUN mode. Hedera not updated."
+            if DRY_RUN else
+            "File accepted. Watch Hedera for 'ready' event with this job_id.")
 
     return JSONResponse(
         {
@@ -212,13 +284,16 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
             "job_id": job_id,
             "filename": file.filename,
             "saved_to": str(out_path),
-            "note": "File accepted. Watch Hedera for 'ready' event with this job_id.",
+            "note": note,
             "hedera_topic_id": topic_str,
             "hedera_message_id_received": tx_id_received,
             "hedera_sequence_start": seq_received,
             "hedera_mirror_base": MIRROR_BASE,
             "status_url": status_url,
-        }
+            "publish_ready_from_server": PUBLISH_READY_FROM_SERVER,
+            "dry_run": DRY_RUN,
+        },
+        status_code=(status.HTTP_202_ACCEPTED if DRY_RUN else status.HTTP_200_OK),
     )
 
 if __name__ == "__main__":

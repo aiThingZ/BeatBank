@@ -3,6 +3,9 @@
 # Exit if any command fails
 set -e
 
+brew update
+brew install python@3.11
+
 echo "🧼 Cleaning old venv (if any)..."
 rm -rf venv
 

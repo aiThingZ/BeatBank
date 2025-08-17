@@ -3,3 +3,4 @@
 uploads
 **/venv
 **/beatbank_state*
+**/jobs_runtime
