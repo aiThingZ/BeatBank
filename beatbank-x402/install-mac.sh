@@ -6,6 +6,7 @@ set -e
 brew update
 brew install python@3.11 
 brew install sui
+brew install ffmpeg
 
 echo "🧼 Cleaning old venv (if any)..."
 rm -rf venv
@@ -29,3 +30,4 @@ pip install -r requirements.txt
 
 echo "✅ Done! Python $(python --version), Java $(java -version)"
 
+docker buildx create --use

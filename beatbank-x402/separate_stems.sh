@@ -19,7 +19,8 @@ for input_file in "$INPUT_DIR"/*.{mp3,mp4,wav}; do
   ffmpeg -y -i "$input_file" -ar 44100 -ac 2 "/tmp/$stem.wav"
 
   # Step 2: Run Demucs for vocals only
-  docker run --rm --gpus all \
+  #docker run --rm --gpus all \
+  docker run --rm  \
     -v "$(pwd)/$INPUT_DIR":/data/input \
     -v "$(pwd)/$OUTPUT_DIR":/data/output \
     demucs-gpu \
